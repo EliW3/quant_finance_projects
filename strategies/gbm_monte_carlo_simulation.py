@@ -1,5 +1,5 @@
-import numpy as np
-import pandas as pd
+import numpy as np 
+import pandas as pd 
 import matplotlib.pyplot as plt
 import yfinance as yf
 from datetime import datetime
@@ -7,43 +7,77 @@ from datetime import datetime
 today = datetime.now()
 today = today.strftime("%Y-%m-%d")
 
-def geometric_brownian_motion_monte_carlo_simulation(sim=1000, start='2020-01-01', end=today, stock="AAPL", days_simulated=252, value_for_probability_calculation=50, inflation_rate=2, worst_outcome_percent=5, best_outcome_percent=5):
-    data = yf.download(stock, start=start, end=end, auto_adjust=True)
+def geometric_brownian_motion_monte_carlo_simulation(portfolio_worth=10000, sim=1000, start='2020-01-01', end=today, stocks=["AAPL", "NVDA"], weights=[0.5, 0.5], days_simulated=252, value_for_probability_calculation=50, inflation_rate=2, worst_outcome_percent=5, best_outcome_percent=5):
+    data = yf.download(stocks, start=start, end=end, auto_adjust=True)
     d1 = datetime.strptime(start, "%Y-%m-%d")
     d2 = datetime.strptime(end, "%Y-%m-%d")
     trading_days = int((d2 - d1).days / 365.25) * 252
-    df = pd.DataFrame({"Close": data["Close"][stock]}, index=data.index)
-    df["Previous Close"] = df["Close"].shift(1)
-    df = df.dropna()
-    df["log_return"] = np.log(df["Close"] / df["Previous Close"]) # Calculate log returns for every day of data
-    volatility = df["log_return"].std() # Calculate volatility/standard deviation
-    mean = df["log_return"].mean() # Calculate mean
-    Z = np.random.randn(sim, days_simulated) # Simulate a random sample of sim * days_simulated of a normal distribution mean = 0, standard deviation = 1
+    close_prices = data["Close"][stocks]
+    log_returns = np.log(close_prices / close_prices.shift(1)).dropna() # Calculate log returns for every day of data
+    volatility = log_returns.std().to_numpy() # Calculate volatility/standard deviation
+    mean = log_returns.mean().to_numpy() # Calculate mean
+    mean = mean[:, np.newaxis, np.newaxis] # Make mean a numpy array of the same numbers but the same dimensions as Z
+    volatility = volatility[:, np.newaxis, np.newaxis] # Same for volatility
+    cov_matrix = log_returns.cov().to_numpy()
+    L = np.linalg.cholesky(cov_matrix)
+    shares_owned = portfolio_worth * np.array(weights)[:] / close_prices.to_numpy()[-1, :]
+    Z = np.random.randn(len(stocks), sim, days_simulated) # Simulate a random sample of sim * days_simulated of a normal distribution mean = 0, standard deviation = 1
     daily_returns = np.exp((mean - volatility ** 2 / 2) + Z * volatility) # Calculate daily returns with each random Z value
-    price_paths = np.ones((sim, days_simulated + 1)) # Plus 1 for today (or last day of the data)
-    price_paths[:, 0] = df["Close"].iloc[-1] # Sets the first value for every simulation to the value of the last of our data
-    price_paths[:, 1:] = df["Close"].iloc[-1] * np.cumprod(daily_returns, axis=1) # Multiplies the second day by daily_returns
-    last_prices = price_paths[:, -1]
-    plt.plot(price_paths.T, linewidth=0.5, alpha=0.3)
+    price_paths = np.ones((len(stocks), sim, days_simulated + 1)) # Create numpy array of ones (plus 1 for today (or last day of the data))
+    price_paths[:, :, 0] = close_prices.iloc[-1].to_numpy()[:, np.newaxis] # Set the first value for every simulation and stock to the value of the last of our data
+    for days in range(1, days_simulated + 1):
+        price_paths[:, :, days] = price_paths[:, :, days - 1] * daily_returns[:, :, days - 1]
+    last_prices = price_paths[:, :, -1]
+    shares_owned = shares_owned[:, np.newaxis, np.newaxis]
+    portfolio_value_paths = np.sum(shares_owned * price_paths, axis=0)
+    plt.plot(portfolio_value_paths.T, alpha=0.07)
+    final_portfolio_values = portfolio_value_paths[:, -1]
+    sorted_sim_indices = np.argsort(final_portfolio_values)
+    median_sim_index = sorted_sim_indices[sim // 2] 
+    median_portfolio_path = portfolio_value_paths[median_sim_index, :]
+    plt.plot(median_portfolio_path, c="black", linewidth=3, label="Median Portfolio Worth")
+    plt.xlabel("Time (in days)")
+    plt.ylabel("Price (in dollars)")
+    plt.title("Portfolio")
     plt.show()
-    expected_price = sum(last_prices) / len(last_prices)
-    print(f"Today's price: {df['Close'].iloc[-1]}")
-    print(f"Median (50% above or below it): {round(np.median(last_prices), 3)}")
-    print(f"Expected price: {round(expected_price, 3)}")
-    real_expected_price = expected_price * ((1 - inflation_rate / 100) ** (days_simulated / 252))
-    print(f"Real expected price ({inflation_rate}% inflation/year): {round(real_expected_price, 3)}")
+    expected_portfolio_price = sum(final_portfolio_values) / len(final_portfolio_values)
+    real_expected_portfolio_price = expected_portfolio_price * ((1 - inflation_rate / 100) ** (days_simulated / 252))
     worst_index = int(sim * (worst_outcome_percent / 100))
     best_index = int(sim * (best_outcome_percent / 100))
-    print(f"Worst cases (least {worst_outcome_percent}% below): {round(sorted(last_prices)[worst_index], 3)}")
-    print(f"Best cases (top {best_outcome_percent}% above): {round(sorted(last_prices, reverse=True)[best_index], 3)}")
-    i = 0
-    x = 0
-    print(f"Probability of profit: {round(np.sum((last_prices - df['Close'].iloc[-1]) * 0.9899 > 0) / len(last_prices) * 100, 3)}%") # Profit * 0.9899 because of fees
-    print(f"Probability of {value_for_probability_calculation}% growth or more: {round(np.sum((last_prices - df['Close'].iloc[-1] * (1 + value_for_probability_calculation / 100)) >= 0) / len(last_prices) * 100, 3)}%")
-
-geometric_brownian_motion_monte_carlo_simulation(
-    start='2020-01-01',
-    stock="TSLA",
-    value_for_probability_calculation=100,
-    sim=10000
-)
+    
+    print("Portfolio :")
+    print(f"  Today's price: {round(portfolio_worth, 3)}")
+    print(f"  Median (50% above or below it): {round(np.median(final_portfolio_values), 3)}")
+    print(f"  Expected price: {round(expected_portfolio_price, 3)}")
+    print(f"  Real expected price ({inflation_rate}% inflation/year): {round(real_expected_portfolio_price, 3)}")
+    print(f"  Worst cases (least {worst_outcome_percent}% below): {round(sorted(final_portfolio_values)[worst_index], 3)}")
+    print(f"  Best cases (top {best_outcome_percent}% above): {round(sorted(final_portfolio_values, reverse=True)[best_index], 3)}")
+    print(f"  Probability of profit: {round(np.sum((final_portfolio_values - portfolio_worth) * 0.9899 > 0) / len(final_portfolio_values) * 100, 3)}%")
+    print(f"  Probability of {value_for_probability_calculation}% growth or more: {round(np.sum((final_portfolio_values - portfolio_worth * (1 + value_for_probability_calculation / 100)) >= 0) / len(final_portfolio_values) * 100, 3)}%")
+    for index, stock in enumerate(stocks):
+        plt.plot(price_paths[index, :, :].T, alpha=0.07)
+        final_day_prices = price_paths[index, :, -1]
+        sorted_sim = np.argsort(final_day_prices)
+        median_sim = sorted_sim[sim // 2]
+        median_path = price_paths[index, median_sim, :]
+        plt.plot(median_path, c="black", linewidth=3, label="Median")
+        plt.title(stock)
+        plt.xlabel("Time (in days)")
+        plt.ylabel("Price (in dollars)")
+        plt.show()
+        expected_price = sum(last_prices[index, :]) / len(last_prices[index, :])
+        print(stock,":")
+        print(f"  Today's price: {round(close_prices.iloc[-1][stock], 3)}")
+        print(f"  Median (50% above or below it): {round(np.median(last_prices[index, :]), 3)}")
+        print(f"  Expected price: {round(expected_price, 3)}")
+        real_expected_price = expected_price * ((1 - inflation_rate / 100) ** (days_simulated / 252))
+        print(f"  Real expected price ({inflation_rate}% inflation/year): {round(real_expected_price, 3)}")
+        print(f"  Real expected portfolio price for {stock}: {round(real_expected_price * weights[index] * portfolio_worth, 3)}")
+        worst_index = int(sim * (worst_outcome_percent / 100))
+        best_index = int(sim * (best_outcome_percent / 100))
+        print(f"  Worst cases (least {worst_outcome_percent}% below): {round(sorted(last_prices[index, :])[worst_index], 3)}")
+        print(f"  Best cases (top {best_outcome_percent}% above): {round(sorted(last_prices[index, :], reverse=True)[best_index], 3)}")
+        i = 0
+        x = 0
+        print(f"  Probability of profit: {round(np.sum((last_prices[index, :] - close_prices.iloc[-1][stock]) * 0.9899 > 0) / len(last_prices[index, :]) * 100, 3)}%") # Profit * 0.9899 because of fees
+        print(f"  Probability of {value_for_probability_calculation}% growth or more: {round(np.sum((last_prices[index, :] - close_prices.iloc[-1][stock] * (1 + value_for_probability_calculation / 100)) >= 0) / len(last_prices[index, :]) * 100, 3)}%")
